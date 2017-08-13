@@ -1,0 +1,150 @@
+---
+- hosts: dokuwiki-server
+  remote_user: vagrant
+  become: yes
+  vars:
+    - dokuwiki_download_url: https://download.dokuwiki.org/out/dokuwiki-c5525093cf2c4f47e2e5d2439fe13964.tgz
+    - dokuwiki_install_dir: wiki
+
+  handlers:
+    - name: restart webservices
+      service:
+        name: "{{ item }}"
+        state: restarted
+      with_items:
+        - php-fpm
+        - nginx
+
+  tasks:
+
+  # 必要なアプリ類をインストール
+    - name: install vim unzip wget
+      yum: 
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - vim
+        - unzip
+        - wget
+
+  # Selinuxをdisabledに変更
+    - name: selinux disabled
+      selinux:
+        state: disabled
+
+  #--- nginxのインストール ---
+  # epelリポジトリの追加
+    - name: install epel-repo
+      yum:
+        name: epel-release
+        state: present
+
+  # nginxのインストール
+    - name: install nginx
+      yum:
+        name: nginx
+        state: present
+
+  # nginxの起動と自動起動設定
+    - name: start nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+  #--- php7のインストール ---
+    - name: install remi repo
+      yum:
+        name: http://rpms.famillecollet.com/enterprise/remi-release-7.rpm
+        state: present
+
+    - name: php7 and tools install
+      yum:
+        name: "{{ item }}"
+        state: present
+        enablerepo: remi,remi-php70
+      with_items:
+        - php 
+        - php-devel 
+        - php-mbstring 
+        - php-pdo 
+        - php-gd 
+        - php-xml 
+        - php-mcrypt 
+        - php-fpm
+
+    - name: php-fpm start
+      service:
+        name: php-fpm
+        state: started
+        enabled: yes
+
+    # DokuWikiのダウンロード
+    - name: download dokuwiki
+      get_url: 
+        url: "{{ dokuwiki_download_url }}"
+        dest: /tmp/
+
+    # nginxの設定変更
+    - name: put nginx's config
+      template:
+        src: setting_files/nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+        backup: yes
+      notify: restart webservices
+
+    # php.iniの設定変更
+    - name: rewrite php.ini settings
+      lineinfile:
+        path: /etc/php.ini
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      with_items:
+        - regexp: '^;date.timezone'
+          line: 'date.timezone = "Asia/Tokyo"'
+        - regexp: '^;mbstring.language'
+          line: 'mbstring.language = Japanese'
+
+    # php-fpmの設定変更
+    - name: rewrite php-fpm settings
+      lineinfile:
+        path: /etc/php-fpm.d/www.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      with_items:
+        - regexp: '^user ='
+          line: 'user = nginx'
+        - regexp: '^group ='
+          line: 'group = nginx'
+        - regexp: '^listen ='
+          line: 'listen = /var/run/php-fpm/php-fpm.sock'
+        - regexp: '^listen\.owner ='
+          line: "listen.owner = nginx"
+        - regexp: '^listen\.group ='
+          line: "listen.group = nginx"
+      notify: restart webservices
+
+    # dokuwikiの展開と配置
+    - name: unarchive dikuwiki.tgz
+      unarchive:
+        remote_src: yes
+        src: /tmp/{{ dokuwiki_download_url | basename }}
+        dest: /tmp/
+        exclude: yes
+        mode: 0777
+
+    # dokuwikiディレクトリをnginxのroot dir配下に指定のディレクトリ名でコピー
+    - name: dokuwiki dir copy to nginx root dir
+      command: mv /tmp/dokuwiki /usr/share/nginx/html/{{ dokuwiki_install_dir }}
+      args:
+        creates: /usr/share/nginx/html/{{ dokuwiki_install_dir }}
+        
+    - name: recursively set 0777
+      file:
+        path: /usr/share/nginx/html/{{ dokuwiki_install_dir }}
+        state: directory
+        mode: 0777
+        owner: nginx
+        group: nginx
+        recurse: yes
+        force: yes
